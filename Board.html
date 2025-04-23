@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>双面镜像绘图板</title>
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f4f4f9;
+    }
+    .controls {
+      display: flex;
+      justify-content: space-around;
+      width: 60%;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    button, select, input[type="range"], input[type="color"] {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      border: none;
+      border-radius: 5px;
+      background-color: #007bff;
+      color: white;
+      transition: background-color 0.3s;
+    }
+    button:hover, select:hover, input[type="range"]:hover, input[type="color"]:hover {
+      background-color: #0056b3;
+    }
+    label {
+      margin-left: 10px;
+      font-size: 16px;
+    }
+    canvas {
+      border: 2px solid #ccc;
+    }
+    .canvas-container {
+      display: flex;
+      position: relative;
+    }
+  .axis {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    right: 50%;
+    height: 100%;
+    width: 0px; /* 调整为更细的宽度 */
+    background-color: transparent; /* 移除原有背景色 */
+    border-left: 2px dashed red; /* 添加红色虚线边框 */
+    border-right: 2px dashed red; /* 添加红色虚线边框 */
+    transform: translateX(-50%);
+    display: none;
+    pointer-events: none;
+    z-index: 2;
+  }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <button onclick="clearCanvas()">清空</button>
+    <button onclick="undo()">撤销</button>
+
+    <select id="lineType" onchange="changeLineType()">
+      <option value="line">直线</option>
+      <option value="curve">曲线</option>
+    </select>
+
+    <input type="range" id="brushSize" min="1" max="20" value="5" oninput="changeBrushSize(this.value)">
+    <label for="brushSize">画笔大小：<span id="sizeDisplay">5</span></label>
+
+    <label for="lineColor">颜色：</label>
+    <input type="color" id="lineColor" value="#000000" oninput="changeLineColor(this.value)">
+
+    <button onclick="downloadImage()">下载</button>
+    <button id="flipButton" onclick="flipAnimation()">折叠</button>
+  </div>
+
+  <div class="canvas-container">
+    <canvas id="leftCanvas" width="400" height="400"></canvas>
+    <div id="axis" class="axis"></div> <!-- 新增的对称轴元素 -->
+    <canvas id="rightCanvas" width="400" height="400"></canvas>
+  </div>
+
+  <script>
+    const leftCanvas = document.getElementById('leftCanvas');
+    const rightCanvas = document.getElementById('rightCanvas');
+    const ctxLeft = leftCanvas.getContext('2d');
+    const ctxRight = rightCanvas.getContext('2d');
+
+    let pointsList = [];
+    let history = [];
+    let isDrawing = false;
+    let lineType = 'line';
+    let brushSize = 5;
+    let lineColor = '#000000';
+    let startPoint = null;
+    let tempLine = null;
+    let isFlipped = false; // 新增标志变量，用于跟踪当前状态
+    const flipButton = document.getElementById('flipButton'); // 获取翻折按钮元素
+
+    function drawPoint(ctx, x, y) {
+      ctx.beginPath();
+      ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
+      ctx.fillStyle = lineColor;
+      ctx.fill();
+    }
+
+    function connectPoints(ctx, points) {
+      if (points.length > 1) {
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) {
+          if (lineType === 'line') {
+            ctx.lineTo(points[i].x, points[i].y);
+          } else if (lineType === 'curve') {
+            ctx.quadraticCurveTo(
+              points[i - 1].x,
+              points[i - 1].y,
+              (points[i - 1].x + points[i].x) / 2,
+              (points[i - 1].y + points[i].y) / 2
+            );
+          }
+        }
+        ctx.lineWidth = brushSize;
+        ctx.strokeStyle = lineColor;
+        ctx.stroke();
+      }
+    }
+
+    function render() {
+      ctxLeft.clearRect(0, 0, leftCanvas.width, leftCanvas.height);
+      ctxRight.clearRect(0, 0, rightCanvas.width, rightCanvas.height);
+
+      for (const points of pointsList) {
+        for (const pt of points) {
+          drawPoint(ctxLeft, pt.x, pt.y);
+          drawPoint(ctxRight, leftCanvas.width - pt.x, pt.y);
+        }
+        connectPoints(ctxLeft, points);
+        connectPoints(ctxRight, points.map(p => ({ x: leftCanvas.width - p.x, y: p.y })));
+      }
+
+      if (lineType === 'line' && tempLine) {
+        ctxLeft.beginPath();
+        ctxLeft.moveTo(tempLine.start.x, tempLine.start.y);
+        ctxLeft.lineTo(tempLine.end.x, tempLine.end.y);
+        ctxLeft.lineWidth = brushSize;
+        ctxLeft.strokeStyle = lineColor;
+        ctxLeft.stroke();
+
+        ctxRight.beginPath();
+        ctxRight.moveTo(leftCanvas.width - tempLine.start.x, tempLine.start.y);
+        ctxRight.lineTo(leftCanvas.width - tempLine.end.x, tempLine.end.y);
+        ctxRight.lineWidth = brushSize;
+        ctxRight.strokeStyle = lineColor;
+        ctxRight.stroke();
+      }
+
+    }
+
+    function addPoint(x, y) {
+      if (pointsList.length === 0 || !isDrawing) return;
+      pointsList[pointsList.length - 1].push({ x, y });
+      render();
+    }
+
+    function changeLineType() {
+      lineType = document.getElementById('lineType').value;
+    }
+
+    function changeBrushSize(value) {
+      brushSize = parseInt(value);
+      document.getElementById('sizeDisplay').innerText = value;
+    }
+
+    function changeLineColor(value) {
+      lineColor = value;
+    }
+
+    function clearCanvas() {
+      ctxLeft.clearRect(0, 0, leftCanvas.width, leftCanvas.height);
+      ctxRight.clearRect(0, 0, rightCanvas.width, rightCanvas.height);
+      pointsList = [];
+      history = [];
+      tempLine = null;
+      isFlipped = false;
+      flipButton.textContent = '折叠';
+      render();
+    }
+
+    function undo() {
+      if (history.length > 0) {
+        pointsList = JSON.parse(JSON.stringify(history.pop()));
+        render();
+      }
+    }
+
+    function saveHistory() {
+      history.push(JSON.parse(JSON.stringify(pointsList)));
+    }
+
+    function getMousePos(canvas, evt) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: evt.clientX - rect.left,
+        y: evt.clientY - rect.top
+      };
+    }
+
+    function getTouchPos(canvas, touchEvent) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: touchEvent.touches[0].clientX - rect.left,
+        y: touchEvent.touches[0].clientY - rect.top
+      };
+    }
+
+    function startDrawing(e) {
+      e.preventDefault();
+      isDrawing = true;
+      saveHistory();
+      const pos = e.type === 'mousedown' ? getMousePos(leftCanvas, e) : getTouchPos(leftCanvas, e);
+      startPoint = pos;
+
+      if (lineType === 'curve') {
+        pointsList.push([]);
+        addPoint(pos.x, pos.y);
+      } else if (lineType === 'line') {
+        tempLine = { start: pos, end: pos };
+      }
+    }
+
+    function moveDrawing(e) {
+      e.preventDefault();
+      if (!isDrawing) return;
+      const pos = e.type === 'mousemove' ? getMousePos(leftCanvas, e) : getTouchPos(leftCanvas, e);
+
+      if (lineType === 'curve') {
+        addPoint(pos.x, pos.y);
+      } else if (lineType === 'line' && tempLine) {
+        tempLine.end = pos;
+        render();
+      }
+    }
+
+    function stopDrawing(e) {
+      e.preventDefault();
+      if (!isDrawing) return;
+      isDrawing = false;
+
+      if (lineType === 'line' && tempLine) {
+        pointsList.push([tempLine.start, tempLine.end]);
+        tempLine = null;
+        render();
+      }
+    }
+
+    leftCanvas.addEventListener('mousedown', startDrawing);
+    leftCanvas.addEventListener('mousemove', moveDrawing);
+    leftCanvas.addEventListener('mouseup', stopDrawing);
+
+    leftCanvas.addEventListener('touchstart', startDrawing);
+    leftCanvas.addEventListener('touchmove', moveDrawing);
+    leftCanvas.addEventListener('touchend', stopDrawing);
+
+    function downloadImage() {
+      const combinedCanvas = document.createElement('canvas');
+      combinedCanvas.width = leftCanvas.width * 2;
+      combinedCanvas.height = leftCanvas.height;
+      const combinedCtx = combinedCanvas.getContext('2d');
+
+      combinedCtx.drawImage(leftCanvas, 0, 0);
+      combinedCtx.save();
+      combinedCtx.translate(combinedCanvas.width, 0);
+      combinedCtx.scale(-1, 1);
+      combinedCtx.drawImage(rightCanvas, 0, 0);
+      combinedCtx.restore();
+
+      const dataURL = combinedCanvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.href = dataURL;
+      link.download = 'drawing.png';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    function flipAnimation() {
+	  const axis = document.getElementById('axis');
+
+      if (isFlipped) {
+        // 还原操作
+        const flipElement = document.createElement('div');
+        const rect = leftCanvas.getBoundingClientRect();
+
+        flipElement.style.position = 'fixed';
+        flipElement.style.left = rect.left + 'px';
+        flipElement.style.top = rect.top + 'px';
+        flipElement.style.width = rect.width + 'px';
+        flipElement.style.height = rect.height + 'px';
+        flipElement.style.backgroundImage = `url(${leftCanvas.toDataURL()})`;
+        flipElement.style.backgroundSize = 'cover';
+        flipElement.style.transformOrigin = 'right center';
+        flipElement.style.transition = 'transform 1s ease-in-out';
+        flipElement.style.zIndex = 1000;
+        flipElement.style.pointerEvents = 'none';
+        flipElement.style.transformStyle = 'preserve-3d';
+        flipElement.style.transform = 'perspective(1000px) rotateY(180deg)';
+
+        document.body.appendChild(flipElement);
+
+        requestAnimationFrame(() => {
+          flipElement.style.transform = 'perspective(1000px) rotateY(0deg)';
+        });
+
+        setTimeout(() => {
+          // 还原完成后移除元素
+          flipElement.remove();
+          render(); // 重新渲染画布
+        }, 1000);
+
+        flipButton.textContent = '折叠';
+        isFlipped = false;
+
+      } else {
+		  // 提前设置状态并渲染对称轴
+		  isFlipped = true;
+		  render();
+
+		  // 创建动画元素
+		  const flipElement = document.createElement('div');
+		  const rect = leftCanvas.getBoundingClientRect();
+
+		  // 设置动画元素样式
+		  Object.assign(flipElement.style, {
+			position: 'fixed',
+			left: `${rect.left}px`,
+			top: `${rect.top}px`,
+			width: `${rect.width}px`,
+			height: `${rect.height}px`,
+			backgroundImage: `url(${leftCanvas.toDataURL()})`,
+			backgroundSize: 'cover',
+			transformOrigin: 'right center',
+			transition: 'transform 1s ease-in-out',
+			zIndex: 1000,
+			pointerEvents: 'none',
+			transformStyle: 'preserve-3d',
+			willChange: 'transform' // 优化动画性能
+		  });
+
+		  document.body.appendChild(flipElement);
+
+		  // 触发动画
+		  requestAnimationFrame(() => {
+			flipElement.style.transform = 'perspective(1000px) rotateY(180deg)';
+		  });
+
+		  // 动画完成后清理
+		  setTimeout(() => {
+			ctxLeft.clearRect(0, 0, leftCanvas.width, leftCanvas.height);
+			// flipElement.remove();
+			// render(); // 确保对称轴保留
+			// 折叠完成后显示对称轴
+			if (isFlipped) axis.style.display = 'block';
+		  }, 1000);
+
+		  flipButton.textContent = '还原';
+		  axis.style.display = 'block';
+      }
+    }
+  </script>
+</body>
+</html>
+    
